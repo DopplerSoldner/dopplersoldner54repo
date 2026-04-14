@@ -1,9 +1,9 @@
 import serial from "@SignalRGB/serial";
 
-export function Name() { return "Skydimo LED Strip Static Test"; }
+export function Name() { return "Skydimo Ultra Minimal Test"; }
 export function VendorId() { return 0x1A86; }
 export function ProductId() { return [0x7523]; }
-export function Publisher() { return "Local Patch"; }
+export function Publisher() { return "Local Test"; }
 export function Type() { return "serial"; }
 export function DeviceType() { return "lightingcontroller"; }
 export function SubdeviceController() { return true; }
@@ -14,132 +14,104 @@ LightingMode:readonly
 forcedColor:readonly
 */
 
+// BUNU DENEYEREK BUL
+const LED_COUNT = 60;
+
+let portName = null;
+let connectedOnce = false;
+let layoutBuilt = false;
+
 export function ControllableParameters() {
     return [
         { property: "shutdownColor", group: "lighting", label: "Shutdown Color", type: "color", default: "#000000" },
-        { property: "LightingMode", group: "lighting", label: "Lighting Mode", type: "combobox", values: ["Canvas", "Forced"], default: "Canvas" },
-        { property: "forcedColor", group: "lighting", label: "Forced Color", type: "color", default: "#009bde" },
+        { property: "LightingMode", group: "lighting", label: "Lighting Mode", type: "combobox", values: ["Canvas", "Forced"], default: "Forced" },
+        { property: "forcedColor", group: "lighting", label: "Forced Color", type: "color", default: "#FF0000" },
     ];
 }
 
-// KENDİ CİHAZINA GÖRE BUNU DEĞİŞTİR
-const LED_COUNT = 114;
-
-let skydimoPortName = null;
-let initialized = false;
-let lastReconnectAttempt = 0;
-const RECONNECT_INTERVAL = 5000;
-
 export function Initialize() {
     const ports = serial.availablePorts();
-    if (!ports.length) {
-        console.log("No serial ports detected.");
+    if (!ports || !ports.length) {
+        console.log("No serial ports found.");
         return;
     }
 
-    skydimoPortName = ports.find(p =>
-        p.vendorId === 0x1A86 && p.productId === 0x7523
-    )?.portName;
-
-    if (!skydimoPortName) {
-        console.log("Skydimo device not found.");
+    const match = ports.find(p => p.vendorId === 0x1A86 && p.productId === 0x7523);
+    if (!match) {
+        console.log("Skydimo CH340 device not found.");
         return;
     }
 
-    setupDeviceLayout();
-    connectToSkydimo();
+    portName = match.portName;
+    console.log("Using port:", portName);
+
+    buildStaticLayout();
+    connectOnlyOnce();
 }
 
 export function Render() {
-    if (!skydimoPortName) return;
+    if (!connectedOnce) return;
+    if (!serial.isConnected()) return;
+    if (!layoutBuilt) return;
 
-    if (!serial.isConnected()) {
-        const now = Date.now();
-        if (now - lastReconnectAttempt > RECONNECT_INTERVAL) {
-            lastReconnectAttempt = now;
-            console.log("Serial disconnected, retrying...");
-            connectToSkydimo();
-        }
-        return;
-    }
-
-    if (!initialized) {
-        setupDeviceLayout();
-    }
-
-    sendColors();
+    sendSolidColor();
 }
 
 export function Shutdown(SystemSuspending) {
-    if (!skydimoPortName) return;
+    if (!serial.isConnected()) return;
+
     const color = SystemSuspending ? "#000000" : shutdownColor;
-    sendColors(color);
-    disconnect();
+    sendSolidColor(color);
+    serial.disconnect();
 }
 
-function setupDeviceLayout() {
+function buildStaticLayout() {
     try {
-        device.setName(`Skydimo Static ${LED_COUNT}`);
+        device.setName(`Skydimo Test ${LED_COUNT}`);
         device.createSubdevice("CH1");
         device.setSubdeviceName("CH1", "Device");
         device.setSubdeviceSize("CH1", LED_COUNT, 1);
         device.setSubdeviceLeds("CH1", generateLedNames(LED_COUNT), generateLedPositions(LED_COUNT));
-        device.setFrameRateTarget(20);
-        initialized = true;
-        console.log("Static layout initialized.");
+        device.setFrameRateTarget(10);
+        layoutBuilt = true;
+        console.log("Static layout created.");
     } catch (e) {
-        console.log("Layout init error:", e);
+        console.log("Layout creation failed:", e);
     }
 }
 
-function connectToSkydimo() {
-    if (!skydimoPortName) return false;
-    if (serial.isConnected()) return true;
+function connectOnlyOnce() {
+    if (!portName) return;
+    if (serial.isConnected()) {
+        connectedOnce = true;
+        return;
+    }
 
-    const connected = serial.connect({
-        portName: skydimoPortName,
+    const ok = serial.connect({
+        portName: portName,
         baudRate: 115200,
         parity: "None",
         dataBits: 8,
         stopBits: "One"
     });
 
-    if (!connected) {
-        console.log("Failed to connect to Skydimo.");
-        return false;
+    if (!ok) {
+        console.log("Serial connect failed.");
+        return;
     }
 
-    device.pause(1500);
-    console.log("Connected to Skydimo on", skydimoPortName);
-    return true;
+    connectedOnce = true;
+    device.pause(3000);
+    console.log("Connected once to", portName);
 }
 
-function disconnect() {
-    if (serial.isConnected()) {
-        serial.disconnect();
-        console.log("Disconnected from serial port");
-    }
-}
-
-function sendColors(overrideColor) {
-    if (!serial.isConnected()) return;
+function sendSolidColor(overrideColor) {
+    const colorHex = overrideColor || (LightingMode === "Forced" ? forcedColor : "#FF0000");
+    const [r, g, b] = hexToRgb(colorHex);
 
     const rgbData = [];
-    const positions = generateLedPositions(LED_COUNT);
-
-    for (let i = 0; i < positions.length; i++) {
-        const [x, y] = positions[i];
-        let color;
-
-        if (overrideColor) {
-            color = hexToRgb(overrideColor);
-        } else if (LightingMode === "Forced") {
-            color = hexToRgb(forcedColor);
-        } else {
-            color = device.subdeviceColor("CH1", x, y);
-        }
-
-        rgbData.push(color[0], color[1], color[2]);
+    for (let i = 0; i < LED_COUNT; i++) {
+        rgbData.push(r, g, b);
     }
 
     const count = LED_COUNT - 1;
@@ -147,18 +119,18 @@ function sendColors(overrideColor) {
     const lo = count & 0xFF;
     const chk = hi ^ lo ^ 0x55;
 
-    // Doğru Adalight header
+    // Standart Adalight header
     const packet = [0x41, 0x64, 0x61, hi, lo, chk, ...rgbData];
 
-    const success = serial.write(packet);
-    if (!success) {
-        console.log("Failed to write LED colors");
+    const ok = serial.write(packet);
+    if (!ok) {
+        console.log("Serial write failed.");
     }
 }
 
 function hexToRgb(hex) {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    if (!result) return [0, 0, 0];
+    if (!result) return [255, 0, 0];
 
     return [
         parseInt(result[1], 16),
